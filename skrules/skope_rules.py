@@ -139,6 +139,7 @@ class SkopeRules(BaseEstimator):
 
     def __init__(self,
                  feature_names=None,
+                 feature_desc=None,
                  precision_min=0.5,
                  recall_min=0.01,
                  n_estimators=10,
@@ -152,10 +153,12 @@ class SkopeRules(BaseEstimator):
                  min_samples_split=2,
                  n_jobs=1,
                  random_state=None,
-                 verbose=0):
+                 verbose=0,
+                 scorer='f1_score'):
         self.precision_min = precision_min
         self.recall_min = recall_min
         self.feature_names = feature_names
+        self.feature_desc = feature_desc
         self.n_estimators = n_estimators
         self.max_samples = max_samples
         self.max_samples_features = max_samples_features
@@ -168,6 +171,8 @@ class SkopeRules(BaseEstimator):
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.verbose = verbose
+        self.scorer = scorer
+        self.scorer_ = None
 
     def fit(self, X, y, sample_weight=None):
         """Fit the model according to the given training data.
@@ -257,6 +262,14 @@ class SkopeRules(BaseEstimator):
         else:
             self.feature_dict_ = {BASE_FEATURE_NAME + str(i): feat
                                   for i, feat in enumerate(feature_names_)}
+
+        if self.feature_desc is not None:
+            self.feature_desc_dict_ = {BASE_FEATURE_NAME + str(i): feat
+                                       for i, feat in enumerate(self.feature_desc)}
+        else:
+            self.feature_desc_dict_ = {BASE_FEATURE_NAME + str(i): feat
+                                       for i, feat in enumerate(feature_names_)}
+
         self.feature_names_ = feature_names_
 
         clfs = []
@@ -383,17 +396,27 @@ class SkopeRules(BaseEstimator):
         self.rules_ = sorted(self.rules_.items(),
                              key=lambda x: (x[1][0], x[1][1]), reverse=True)
 
+        if isinstance(self.scorer, str):
+            if self.scorer == 'f1_score':
+                self.scorer_ = self.f1_score
+            elif self.scorer == 'precision':
+                self.scorer_ = self.precision
+            elif self.scorer == 'recall':
+                self.scorer_ = self.recall
+        else:
+            self.scorer_ = self.scorer
+
         # Deduplicate the rule using semantic tree
         if self.max_depth_duplication is not None:
             self.rules_ = self.deduplicate(self.rules_)
-
-        self.rules_ = sorted(self.rules_, key=lambda x: - self.f1_score(x))
+        self.rules_ = sorted(self.rules_, key=lambda x: - self.scorer_(x))
         self.rules_without_feature_names_ = self.rules_
 
         # Replace generic feature names by real feature names
         self.rules_ = [(replace_feature_name(rule, self.feature_dict_), perf)
                        for rule, perf in self.rules_]
-
+        self.rules_with_feature_desc_ = [(replace_feature_name(rule, self.feature_desc_dict_), perf)
+                                         for rule, perf in self.rules_without_feature_names_]
         return self
 
     def predict(self, X):
@@ -624,7 +647,7 @@ class SkopeRules(BaseEstimator):
         return y_detected.mean(), float(true_pos) / pos
 
     def deduplicate(self, rules):
-        return [max(rules_set, key=self.f1_score)
+        return [max(rules_set, key=self.scorer_)
                 for rules_set in self._find_similar_rulesets(rules)]
 
     def _find_similar_rulesets(self, rules):
@@ -692,3 +715,9 @@ class SkopeRules(BaseEstimator):
     def f1_score(self, x):
         return 2 * x[1][0] * x[1][1] / \
                (x[1][0] + x[1][1]) if (x[1][0] + x[1][1]) > 0 else 0
+
+    def precision(self, x):
+        return x[1][0]
+
+    def recall(self, x):
+        return x[1][1]
